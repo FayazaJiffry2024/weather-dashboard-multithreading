@@ -11,59 +11,38 @@ class WeatherController extends Controller
 {
     public function getWeather()
     {
-        // ✅ List of 10 cities
-        $cities = ['Colombo', 'Tokyo', 'Seoul', 'Paris', 'New York', 'London', 'Dubai', 'Sydney', 'Moscow', 'Mumbai'];
-        $apiKey = env('OPENWEATHER_API_KEY'); 
+        // ✅ List of 15 cities
+        $cities = [
+            'Colombo', 'Tokyo', 'Seoul', 'Paris', 'New York',
+            'London', 'Dubai', 'Sydney', 'Moscow', 'Mumbai',
+            'Singapore', 'Rome', 'Beijing', 'Berlin', 'Toronto'
+        ];
 
-        $results = [];
+        $apiKey = env('OPENWEATHER_API_KEY');
+
         $pool = Pool::create();
 
         foreach ($cities as $city) {
             $pool->add(function () use ($city, $apiKey) {
-                // ✅ Check if recent weather data exists (last 10 minutes)
+                // Step 1: Check if cached data exists (last 10 mins)
                 $cached = Weather::where('city', $city)
                     ->where('recorded_at', '>=', now()->subMinutes(10))
                     ->first();
 
                 if ($cached) {
-                    // Return cached data in full structure
                     return [
                         'city' => $city,
-                        'data' => [
-                            'coord' => ['lon' => 0, 'lat' => 0], // optional
-                            'weather' => [
-                                [
-                                    'id' => 0,
-                                    'main' => $cached->condition,
-                                    'description' => $cached->condition,
-                                    'icon' => '01d', // default icon
-                                ]
-                            ],
-                            'base' => 'stations',
-                            'main' => [
-                                'temp' => $cached->temp,
-                                'feels_like' => $cached->feels_like,
-                                'temp_min' => $cached->temp,
-                                'temp_max' => $cached->temp,
-                                'pressure' => 1010,
-                                'humidity' => $cached->humidity,
-                                'sea_level' => 1010,
-                                'grnd_level' => 1010,
-                            ],
-                            'visibility' => 10000,
-                            'wind' => ['speed' => $cached->wind_speed, 'deg' => 0],
-                            'clouds' => ['all' => 0],
-                            'dt' => now()->timestamp,
-                            'sys' => ['type' => 1, 'id' => 0, 'country' => ''],
-                            'timezone' => 0,
-                            'id' => 0,
-                            'name' => $city,
-                            'cod' => 200,
-                        ]
+                        'temp' => $cached->temp,
+                        'feels_like' => $cached->feels_like,
+                        'condition' => $cached->condition,
+                        'humidity' => $cached->humidity,
+                        'wind_speed' => $cached->wind_speed,
+                        'icon' => '01d', // default icon for cached
+                        'source' => 'cached'
                     ];
                 }
 
-                // ✅ If no recent cache, fetch live data
+                // Step 2: Fetch fresh data from OpenWeatherMap
                 $response = Http::get('https://api.openweathermap.org/data/2.5/weather', [
                     'q' => $city,
                     'appid' => $apiKey,
@@ -72,8 +51,8 @@ class WeatherController extends Controller
 
                 $data = $response->json();
 
-                // ✅ Save to database if valid
                 if (!empty($data['main'])) {
+                    // Step 3: Save or update record in DB
                     Weather::updateOrCreate(
                         ['city' => $city],
                         [
@@ -85,19 +64,38 @@ class WeatherController extends Controller
                             'recorded_at' => now(),
                         ]
                     );
+
+                    return [
+                        'city' => $city,
+                        'temp' => $data['main']['temp'],
+                        'feels_like' => $data['main']['feels_like'],
+                        'condition' => $data['weather'][0]['description'],
+                        'humidity' => $data['main']['humidity'],
+                        'wind_speed' => $data['wind']['speed'],
+                        'icon' => $data['weather'][0]['icon'] ?? '01d',
+                        'source' => 'api'
+                    ];
                 }
 
+                // Step 4: Fallback if API fails
                 return [
                     'city' => $city,
-                    'data' => $data,
+                    'temp' => 'N/A',
+                    'feels_like' => 'N/A',
+                    'condition' => 'Data not available',
+                    'humidity' => 'N/A',
+                    'wind_speed' => 'N/A',
+                    'icon' => '01d',
+                    'source' => 'none'
                 ];
             });
         }
 
-        foreach ($pool as $output) {
-            $results[] = $output;
-        }
+        // ✅ Collect all results after multithreading
+        $results = $pool->wait(); // IMPORTANT: wait() ensures all async tasks complete
 
-        return response()->json($results);
+        // ✅ Return JSON response to frontend
+        return response()->json($results)
+            ->header('Access-Control-Allow-Origin', '*');
     }
 }
